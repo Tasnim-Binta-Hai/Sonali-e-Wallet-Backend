@@ -108,7 +108,13 @@ app.get("/api/db-test", async (req, res) => {
         });
 
     } finally {
-        if (connection) await connection.close();
+        if (connection) {
+            try {
+                await connection.close();
+            } catch (error) {
+                console.error("Connection close failed:", error.message);
+            }
+        }
     }
 });
 
@@ -364,8 +370,10 @@ app.post("/api/login", async (req, res) => {
         const cleanMobile = String(mobile).trim();
         const cleanPin = String(pin).trim();
 
-        if (!/^01[3-9]\d{8}$/.test(cleanMobile) ||
-            !/^\d{6}$/.test(cleanPin)) {
+        if (
+            !/^01[3-9]\d{8}$/.test(cleanMobile) ||
+            !/^\d{6}$/.test(cleanPin)
+        ) {
             return res.status(401).json({
                 success: false,
                 message: "Invalid mobile number or PIN"
@@ -434,15 +442,13 @@ app.post("/api/login", async (req, res) => {
             });
         }
 
-        res.json({
-            success: true,
-            message: "Login Successful!",
-            user: {
-                userId: user.USER_ID,
-                customerId: user.CUSTOMER_ID,
-                fullName: user.FULL_NAME
-            }
-        });
+       res.json({
+    success: true,
+    message: "Login Successful!",
+    userId: user.USER_ID,
+    customerId: user.CUSTOMER_ID,
+    fullName: user.FULL_NAME
+});
 
     } catch (error) {
         console.error("Login failed:", error.message);
@@ -450,6 +456,92 @@ app.post("/api/login", async (req, res) => {
         res.status(500).json({
             success: false,
             message: "Login failed. Please try again."
+        });
+
+    } finally {
+        if (connection) {
+            try {
+                await connection.close();
+            } catch (error) {
+                console.error("Connection close failed:", error.message);
+            }
+        }
+    }
+});
+
+// DASHBOARD BALANCE API
+app.get("/api/dashboard/:customerId", async (req, res) => {
+    let connection;
+
+    try {
+        const customerId = Number(req.params.customerId);
+
+        if (!Number.isSafeInteger(customerId) || customerId <= 0) {
+            return res.status(400).json({
+                success: false,
+                message: "Invalid customer ID"
+            });
+        }
+
+        connection = await getConnection();
+
+        const result = await connection.execute(
+            `SELECT
+                C.CUSTOMER_ID,
+
+                NVL((
+                    SELECT SUM(A.BALANCE)
+                    FROM ACCOUNT_HOLDER AH
+                    JOIN ACCOUNT A
+                      ON A.ACCOUNT_ID = AH.ACCOUNT_ID
+                    WHERE AH.CUSTOMER_ID = C.CUSTOMER_ID
+                ), 0) AS BANK_BALANCE,
+
+                NVL((
+                    SELECT SUM(
+                        CASE
+                            WHEN L.ENTRY_TYPE = 'CREDIT'
+                                THEN L.ENTRY_AMOUNT
+                            WHEN L.ENTRY_TYPE = 'DEBIT'
+                                THEN -L.ENTRY_AMOUNT
+                        END
+                    )
+                    FROM MFS_ACCOUNT M
+                    JOIN MFS_WALLET_LEDGER L
+                      ON L.MFS_ACCOUNT_ID = M.MFS_ACCOUNT_ID
+                    WHERE M.CUSTOMER_ID = C.CUSTOMER_ID
+                      AND M.STATUS = 'ACTIVE'
+                ), 0) AS WALLET_BALANCE
+
+             FROM CUSTOMER C
+             WHERE C.CUSTOMER_ID = :customerId
+               AND C.STATUS = 'ACTIVE'`,
+            { customerId }
+        );
+
+        if (result.rows.length === 0) {
+            return res.status(404).json({
+                success: false,
+                message: "Customer not found"
+            });
+        }
+
+        const account = result.rows[0];
+
+        res.json({
+            success: true,
+            message: "Dashboard Balance Retrieved Successfully",
+            customerId: account.CUSTOMER_ID,
+            bankBalance: account.BANK_BALANCE,
+            walletBalance: account.WALLET_BALANCE
+        });
+
+    } catch (error) {
+        console.error("Dashboard API failed:", error.message);
+
+        res.status(500).json({
+            success: false,
+            message: "Unable to retrieve dashboard balance"
         });
 
     } finally {
